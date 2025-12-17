@@ -1,0 +1,1 @@
+LIFDetector is a python application based on OpenCV which detects, validates and reports on Lunar Impact Flashes in raw AVI video captures of the lunar night side.
