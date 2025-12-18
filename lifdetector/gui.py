@@ -1,11 +1,32 @@
 import cv2
 import numpy as np
-from PyQt6.QtWidgets import (
-    QMainWindow, QLabel, QFileDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QWidget, QMessageBox, QSizePolicy
-)
-from PyQt6.QtGui import QPixmap, QImage, QAction
-from PyQt6.QtCore import Qt
 
+# QT6 imports
+from PyQt6.QtCore import Qt as QtCoreQt
+from PyQt6.QtWidgets import QToolButton, QApplication
+from PyQt6.QtWidgets import (
+    QMainWindow,
+    QLabel,
+    QLineEdit,
+    QSlider,
+    QPushButton,
+    QFileDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QGridLayout,
+    QPushButton,
+    QWidget,
+    QMessageBox,
+    QSizePolicy
+)
+from PyQt6.QtGui import (
+    QPixmap,
+    QImage,
+    QAction,
+    QFont
+)
+
+from .detection import detect_flashes
 
 class MainWindow(QMainWindow):
     """
@@ -14,27 +35,38 @@ class MainWindow(QMainWindow):
     """
 
     def __init__(self):
+
         super().__init__()
-        self.setWindowTitle("LifDetector")
+
+        self.setWindowTitle("LIF Detector")
+
         # Set initial window size to 75% of the current display
         screen = self.screen() if hasattr(self, 'screen') else None
         if screen is None:
             screen = QApplication.primaryScreen()
         geometry = screen.geometry()
-        width = int(geometry.width() * 0.75)
-        height = int(geometry.height() * 0.75)
+        width = 960
+        height = 720
         self.resize(width, height)
 
         # --- Top panel ---
-        from PyQt6.QtWidgets import QLabel as QtLabel, QLineEdit, QSlider
-        from PyQt6.QtCore import Qt as QtCoreQt
         self.open_button = QPushButton("Select AVI File")
-        self.open_button.setFixedWidth(120)
+        self.open_button.setFixedWidth(150)
         self.open_button.clicked.connect(self.open_file)
-        self.avi_label = QtLabel("AVI File:")
+        self.open_button.setStyleSheet(
+            """
+            background-color: "green";
+            color: white;
+            border-radius: 0px;
+            padding: 12px 24px 12px 24px;
+            """
+        )
+
+        self.avi_label = QLabel("AVI File:")
         self.avi_path_box = QLineEdit()
         self.avi_path_box.setReadOnly(True)
-        self.avi_path_box.setMinimumWidth(300)
+        self.avi_path_box.setMinimumWidth(240)
+
         top_layout = QHBoxLayout()
         top_layout.addWidget(self.open_button)
         top_layout.addSpacing(10)
@@ -44,36 +76,82 @@ class MainWindow(QMainWindow):
         top_widget.setLayout(top_layout)
 
         # --- Left panel ---
+        # Action buttons for:
+        # 1) Detect Flashes
+        # 2) Create PDF Report
+        # 3) Quit Application
+
+        # Action button style
+        action_button_style = """
+            QPushButton {
+                background-color: "darkblue";
+                color: white;
+                border-radius: 0px;
+                padding: 12px 32px 12px 32px;
+            }
+            QPushButton:disabled {
+                background-color: #90a4ae;
+                color: #eeeeee;
+            }
+        """
+
         self.detect_button = QPushButton("Detect Flashes")
-        self.detect_button.clicked.connect(self.detect_flashes)
-        self.report_button = QPushButton("Create PDF Report")
+        self.detect_button.setFixedWidth(150)
+        self.detect_button.clicked.connect(self.run_detection)
+        self.detect_button.setStyleSheet(action_button_style)
+
+        self.report_button = QPushButton("Create Report")
+        self.report_button.setFixedWidth(150)
         self.report_button.clicked.connect(self.create_pdf_report)
+        self.report_button.setStyleSheet(action_button_style)
+
+        self.quit_button = QPushButton("Quit")
+        self.quit_button.setFixedWidth(150)
+        self.quit_button.clicked.connect(self.close)
+        self.quit_button.setStyleSheet(
+            """
+            background-color: "darkred";
+            color: white;
+            border-radius: 0px;
+            padding: 12px 24px 12px 24px;
+            """
+        )
+
         left_layout = QVBoxLayout()
         left_layout.addWidget(self.detect_button)
         left_layout.addWidget(self.report_button)
         left_layout.addStretch(1)
+        left_layout.addWidget(self.quit_button)
         left_widget = QWidget()
         left_widget.setLayout(left_layout)
 
-        # --- Main panel (frame display) ---
-        self.image_label = QLabel("Open an AVI file to begin.")
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # --- Initial image label ---
+        self.image_label = QLabel("Open an AVI file to begin")
+        self.image_label.setAlignment(QtCoreQt.AlignmentFlag.AlignCenter)
         self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # --- Frame slider and frame number display ---
         self.frame_slider = QSlider(QtCoreQt.Orientation.Horizontal)
         self.frame_slider.setEnabled(False)
         self.frame_slider.valueChanged.connect(self.slider_frame_changed)
+        
         self.frame_number_box = QLineEdit()
         self.frame_number_box.setReadOnly(True)
-        self.frame_number_box.setFixedWidth(240)
+        self.frame_number_box.setFixedWidth(200)
         self.frame_number_box.setFixedHeight(40)
-        self.frame_number_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.frame_number_box.setStyleSheet("background-color: #2ecc40; color: white; font-weight: bold; font-size: 20px; border-radius: 8px;")
+        self.frame_number_box.setAlignment(QtCoreQt.AlignmentFlag.AlignCenter)
+        self.frame_number_box.setStyleSheet(
+            """
+            background-color: "darkgray";
+            color: white;
+            font-weight: bold;
+            font-size: 20px;
+            border-radius: 8px;
+            """
+        )
 
         # --- Video controls ---
-        from PyQt6.QtWidgets import QToolButton
-        from PyQt6.QtGui import QIcon, QFont
+ 
         button_size = 64  # pixels (default is usually 32)
         font_size = 32   # Large font for button icons
         button_font = QFont()
@@ -115,6 +193,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(top_widget)
         content_layout = QHBoxLayout()
         content_layout.addWidget(left_widget)
+
         # Main panel with image and controls
         video_panel_layout = QVBoxLayout()
         video_panel_layout.addWidget(self.image_label, stretch=1)
@@ -126,6 +205,7 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
+        self._create_menu()
 
     def play_video(self):
         if not self.cap:
@@ -144,17 +224,14 @@ class MainWindow(QMainWindow):
                 time.sleep(1.0 / max(1, self.cap.get(cv2.CAP_PROP_FPS)))
         threading.Thread(target=run, daemon=True).start()
 
-
     def stop_video(self):
         self._playing = False
-
 
     def fast_forward(self):
         if not self.cap:
             return
         pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
         self.show_frame(pos + 10)
-
 
     def reverse(self):
         if not self.cap:
@@ -177,36 +254,46 @@ class MainWindow(QMainWindow):
     def create_pdf_report(self):
         QMessageBox.information(self, "PDF Report", "PDF report generation not implemented yet.")
 
+    def run_detection(self):
 
-    def detect_flashes(self):
-        if not self.video_path:
-            QMessageBox.warning(self, "No Video", "Please open an AVI file first.")
+        if not hasattr(self, 'video_path') or not self.video_path:
+            QMessageBox.warning(self, "No Video", "Please select an AVI file first.")
             return
-        import threading
-        from .detection import detect_flashes
+        
+        # Gray out the detection button and change text
+        self.detect_button.setEnabled(False)
+        self.detect_button.setText("Detecting...")
 
-        def run_detection():
-            flashes = detect_flashes(self.video_path, progress_callback=self.update_frame_number_box)
-            if flashes:
-                msg = f"Flashes detected at frames: {flashes}"
-            else:
-                msg = "No flashes detected."
-            def show_result():
-                QMessageBox.information(self, "Flash Detection", msg)
-            self.run_on_main_thread(show_result)
+        # Short test loop over first 100 frames in blocks of 8 frames
+        frame_window = 8
 
-        threading.Thread(target=run_detection, daemon=True).start()
+        flash_list = []
 
-    def update_frame_number_box(self, frame_idx):
-        from PyQt6.QtCore import QMetaObject, Qt as QtCoreQt
-        def update():
+        for frame_idx in range(0, 100, 8):
+            self.show_frame(frame_idx)
             self.frame_number_box.setText(f"Frame: {frame_idx}")
-        QMetaObject.invokeMethod(self, update, QtCoreQt.ConnectionType.QueuedConnection)
+            QApplication.processEvents()
 
-    def run_on_main_thread(self, func):
-        from PyQt6.QtCore import QMetaObject, Qt as QtCoreQt
-        QMetaObject.invokeMethod(self, func, QtCoreQt.ConnectionType.QueuedConnection)
+            flashes_in_block = detect_flashes(
+                video_path=self.video_path,
+                start_frame=frame_idx,
+                frame_window=frame_window,
+                z_thresh=3.0,
+                min_area=5,
+            )
 
+            flash_list.append(flashes_in_block)
+        
+        # Restore the detection button
+        self.detect_button.setEnabled(True)
+        self.detect_button.setText("Detect Flashes")
+
+        QMessageBox.information(
+            self, "Detection Complete",
+            f"Detected {len(flash_list)} flashes"
+        )
+
+    # Removed update_frame_number_box and run_on_main_thread; update GUI directly in main thread
 
     def open_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -216,17 +303,19 @@ class MainWindow(QMainWindow):
             self.video_path = file_path
             self.avi_path_box.setText(file_path)
             self.cap = cv2.VideoCapture(file_path)
+
             if not self.cap.isOpened():
                 QMessageBox.critical(self, "Error", "Failed to open video file.")
                 return
+            
             # Enable and set up the slider
-            total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
             self.frame_slider.setEnabled(True)
             self.frame_slider.setMinimum(0)
-            self.frame_slider.setMaximum(max(0, total_frames - 1))
+            self.frame_slider.setMaximum(max(0, self.total_frames - 1))
             self.frame_slider.setValue(0)
             self.show_frame(0)
-
 
     def show_frame(self, frame_idx):
         if not self.cap:
@@ -242,7 +331,7 @@ class MainWindow(QMainWindow):
         qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_image)
         self.image_label.setPixmap(pixmap.scaled(
-            self.image_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            self.image_label.size(), QtCoreQt.AspectRatioMode.KeepAspectRatio, QtCoreQt.TransformationMode.SmoothTransformation
         ))
         # Update slider and frame number box
         self.frame_slider.blockSignals(True)
