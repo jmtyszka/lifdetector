@@ -26,7 +26,7 @@ from PyQt6.QtGui import (
     QFont
 )
 
-from .detection import detect_flashes
+from .detection import AnomalyDetector
 
 class MainWindow(QMainWindow):
     """
@@ -76,12 +76,59 @@ class MainWindow(QMainWindow):
         top_widget.setLayout(top_layout)
 
         # --- Left panel ---
-        # Action buttons for:
-        # 1) Detect Flashes
-        # 2) Create PDF Report
-        # 3) Quit Application
+        # Add 5 labeled text entry boxes at the top
+        left_layout = QVBoxLayout()
 
-        # Action button style
+        # Grid for labels and text boxes
+        param_grid = QGridLayout()
+        self.param_labels = []
+        self.param_boxes = []
+
+        param_setup = {
+            "MAD Threshold": 5.0,
+            "Min Area (pix)": 5,
+            "Max Area (pix)": 100,
+            "Min Duration (s)": 0.05,
+            "Max Duration (s)": 0.15
+        }
+        for i, name in enumerate(param_setup.keys()):
+            label = QLabel(name)
+            label.setAlignment(QtCoreQt.AlignmentFlag.AlignRight | QtCoreQt.AlignmentFlag.AlignVCenter)
+            box = QLineEdit()
+            box.setFixedWidth(120)
+            box.setText(str(param_setup[name]))
+            self.param_labels.append(label)
+            self.param_boxes.append(box)
+            param_grid.addWidget(label, i, 0)
+            param_grid.addWidget(box, i, 1)
+
+        left_layout.addLayout(param_grid)
+
+        # Detect button: full width, orange
+        self.detect_button = QPushButton("Detect Flashes")
+        self.detect_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.detect_button.setMinimumHeight(40)
+        self.detect_button.clicked.connect(self.run_detection)
+        self.detect_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: orange;
+                color: white;
+                border-radius: 0px;
+                padding: 12px 0px 12px 0px;
+                font-weight: bold;
+            }
+            QPushButton:disabled {
+                background-color: #ffd699;
+                color: #eeeeee;
+            }
+            """
+        )
+        left_layout.addWidget(self.detect_button)
+
+        left_layout.addStretch(1)
+
+        # Action button style for report and quit
         action_button_style = """
             QPushButton {
                 background-color: "darkblue";
@@ -94,11 +141,6 @@ class MainWindow(QMainWindow):
                 color: #eeeeee;
             }
         """
-
-        self.detect_button = QPushButton("Detect Flashes")
-        self.detect_button.setFixedWidth(150)
-        self.detect_button.clicked.connect(self.run_detection)
-        self.detect_button.setStyleSheet(action_button_style)
 
         self.report_button = QPushButton("Create Report")
         self.report_button.setFixedWidth(150)
@@ -117,11 +159,10 @@ class MainWindow(QMainWindow):
             """
         )
 
-        left_layout = QVBoxLayout()
-        left_layout.addWidget(self.detect_button)
+        # Add report and quit buttons at the bottom
         left_layout.addWidget(self.report_button)
-        left_layout.addStretch(1)
         left_layout.addWidget(self.quit_button)
+
         left_widget = QWidget()
         left_widget.setLayout(left_layout)
 
@@ -130,17 +171,34 @@ class MainWindow(QMainWindow):
         self.image_label.setAlignment(QtCoreQt.AlignmentFlag.AlignCenter)
         self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        # --- Frame slider and frame number display ---
+        # --- Frame slider ---
         self.frame_slider = QSlider(QtCoreQt.Orientation.Horizontal)
         self.frame_slider.setEnabled(False)
         self.frame_slider.valueChanged.connect(self.slider_frame_changed)
         
+        # --- Frame number box ---
         self.frame_number_box = QLineEdit()
         self.frame_number_box.setReadOnly(True)
         self.frame_number_box.setFixedWidth(200)
         self.frame_number_box.setFixedHeight(40)
         self.frame_number_box.setAlignment(QtCoreQt.AlignmentFlag.AlignCenter)
         self.frame_number_box.setStyleSheet(
+            """
+            background-color: "darkgray";
+            color: white;
+            font-weight: bold;
+            font-size: 20px;
+            border-radius: 8px;
+            """
+        )
+
+        # --- Running detection count box ---
+        self.detection_count_box = QLineEdit()
+        self.detection_count_box.setReadOnly(True)
+        self.detection_count_box.setFixedWidth(200)
+        self.detection_count_box.setFixedHeight(40)
+        self.detection_count_box.setAlignment(QtCoreQt.AlignmentFlag.AlignCenter)
+        self.detection_count_box.setStyleSheet(
             """
             background-color: "darkgray";
             color: white;
@@ -199,6 +257,7 @@ class MainWindow(QMainWindow):
         video_panel_layout.addWidget(self.image_label, stretch=1)
         video_panel_layout.addWidget(self.frame_slider)
         video_panel_layout.addWidget(self.frame_number_box)
+        video_panel_layout.addWidget(self.detection_count_box)
         video_panel_layout.addLayout(controls_layout)
         content_layout.addLayout(video_panel_layout, stretch=1)
         main_layout.addLayout(content_layout)
@@ -264,25 +323,32 @@ class MainWindow(QMainWindow):
         self.detect_button.setEnabled(False)
         self.detect_button.setText("Detecting...")
 
-        # Short test loop over first 100 frames in blocks of 8 frames
-        frame_window = 8
-
         flash_list = []
 
-        for frame_idx in range(0, 100, 8):
+        # Hardwire block size to 32 frames for now
+        block_size = 32
+
+        for frame_idx in range(0, 320, block_size):
+
             self.show_frame(frame_idx)
             self.frame_number_box.setText(f"Frame: {frame_idx}")
             QApplication.processEvents()
 
-            flashes_in_block = detect_flashes(
+            detector = AnomalyDetector(
                 video_path=self.video_path,
-                start_frame=frame_idx,
-                frame_window=frame_window,
-                z_thresh=3.0,
-                min_area=5,
+                mad_thresh=float(self.param_boxes[0].text()),
+                min_area_pix=int(self.param_boxes[1].text()),
+                max_area_pix=int(self.param_boxes[2].text()),
+                min_duration_secs=float(self.param_boxes[3].text()),
+                max_duration_secs=float(self.param_boxes[4].text())
             )
 
+            flashes_in_block = detector.detect_in_block(frame_idx)
+
             flash_list.append(flashes_in_block)
+
+        # Cleanup detector resources
+        detector.cleanup()
         
         # Restore the detection button
         self.detect_button.setEnabled(True)

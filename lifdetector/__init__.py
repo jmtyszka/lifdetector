@@ -1,2 +1,3 @@
 # LifDetector package
-from .detection import detect_flashes
+from .gui import MainWindow
+from .detection import AnomalyDetector

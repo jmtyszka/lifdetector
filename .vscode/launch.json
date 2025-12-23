@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: lifdetector __main__ (package)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "lifdetector",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": ["-m", "lifdetector.__main__"]
+        },
+        {
+            "name": "Python: lifdetector gui.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/lifdetector/gui.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
