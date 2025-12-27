@@ -9,14 +9,6 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": ["-m", "lifdetector.__main__"]
-        },
-        {
-            "name": "Python: lifdetector gui.py",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/lifdetector/gui.py",
-            "console": "integratedTerminal",
-            "justMyCode": true
         }
     ]
 }

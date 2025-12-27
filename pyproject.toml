@@ -12,7 +12,7 @@ dependencies = [
     "opencv-python",
     "reportlab",
     "numpy",
-    "astropy",
+    "scipy",
     "cupy"
 ]
  

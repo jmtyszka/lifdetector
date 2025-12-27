@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QWidget,
     QMessageBox,
+    QSlider,
     QSizePolicy
 )
 from PyQt6.QtGui import (
@@ -44,35 +45,48 @@ class MainWindow(QMainWindow):
         screen = self.screen() if hasattr(self, 'screen') else None
         if screen is None:
             screen = QApplication.primaryScreen()
-        geometry = screen.geometry()
         width = 960
         height = 720
         self.resize(width, height)
 
-        # Create the QTabWidget
+        # Create a tab widget
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
-
-        # Create the first (video) tab
-        self.video_tab = QWidget()
-        self.tabs.addTab(self.video_tab, "Video")
-        self.setup_video_ui()
-
-        # Create the second (detection) tab
+    
+        # Create the first (detection) tab
         self.detection_tab = QWidget()
         self.tabs.addTab(self.detection_tab, "Detection")
         self.setup_detection_ui()
+
+        # Create the second (review) tab
+        self.review_tab = QWidget()
+        self.tabs.addTab(self.review_tab, "Review")
+        self.setup_review_ui()
 
         # Create the third (configuration) tab
         self.configuration_tab = QWidget()
         self.tabs.addTab(self.configuration_tab, "Configuration")
         self.setup_configuration_ui()
 
-        # --- Top panel ---
-        self.open_button = QPushButton("Select AVI File")
-        self.open_button.setFixedWidth(150)
-        self.open_button.clicked.connect(self.open_file)
-        self.open_button.setStyleSheet(
+        # --- Layout composition ---
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(self.tabs, stretch=1)
+
+        # Create central widget
+        central_widget = QWidget()
+        central_widget.setLayout(main_layout)
+        self.setCentralWidget(central_widget)
+        self._create_menu()
+
+        # Initialize video capture object
+        self.cap = None
+
+    def setup_detection_ui(self):
+
+        self.avi_select_button = QPushButton("Select AVI File")
+        self.avi_select_button.setFixedWidth(150)
+        self.avi_select_button.clicked.connect(self.open_file)
+        self.avi_select_button.setStyleSheet(
             """
             background-color: "green";
             color: white;
@@ -87,134 +101,38 @@ class MainWindow(QMainWindow):
         self.avi_path_box.setMinimumWidth(240)
 
         top_layout = QHBoxLayout()
-        top_layout.addWidget(self.open_button)
+        top_layout.addWidget(self.avi_select_button)
         top_layout.addSpacing(10)
         top_layout.addWidget(self.avi_label)
         top_layout.addWidget(self.avi_path_box, stretch=1)
         top_widget = QWidget()
         top_widget.setLayout(top_layout)
 
-        # --- Left panel ---
-        # Detection parameter text boxes will be moved to the Configuration tab (Tab 3)
-        # Grid for labels and text boxes
-        param_grid = QGridLayout()
-        self.param_labels = []
-        self.param_boxes = []
-
-        param_setup = {
-            "MAD Threshold": 5.0,
-            "Min Area (pix)": 5,
-            "Max Area (pix)": 100,
-            "Min Duration (s)": 0.05,
-            "Max Duration (s)": 0.15
-        }
-        for i, name in enumerate(param_setup.keys()):
-            label = QLabel(name)
-            label.setAlignment(QtCoreQt.AlignmentFlag.AlignRight | QtCoreQt.AlignmentFlag.AlignVCenter)
-            box = QLineEdit()
-            box.setFixedWidth(120)
-            box.setText(str(param_setup[name]))
-            self.param_labels.append(label)
-            self.param_boxes.append(box)
-            param_grid.addWidget(label, i, 0)
-            param_grid.addWidget(box, i, 1)
-
-        # Add the parameter grid to the Configuration tab (Tab 3)
-        config_tab_layout = QVBoxLayout()
-        config_tab_layout.addLayout(param_grid)
-        config_tab_layout.addStretch(1)
-        self.configuration_tab.setLayout(config_tab_layout)
-
-        # Detect button: full width, orange
-        self.detect_button = QPushButton("Detect Flashes")
-        self.detect_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.detect_button.setMinimumHeight(40)
-        self.detect_button.clicked.connect(self.run_detection)
-        self.detect_button.setStyleSheet(
-            """
-            QPushButton {
-                background-color: orange;
-                color: white;
-                border-radius: 0px;
-                padding: 12px 0px 12px 0px;
-                font-weight: bold;
-            }
-            QPushButton:disabled {
-                background-color: #ffd699;
-                color: #eeeeee;
-            }
-            """
-        )
-        left_layout.addWidget(self.detect_button)
-
-        left_layout.addStretch(1)
-
-        # Action button style for report and quit
-        action_button_style = """
-            QPushButton {
-                background-color: "darkblue";
-                color: white;
-                border-radius: 0px;
-                padding: 12px 32px 12px 32px;
-            }
-            QPushButton:disabled {
-                background-color: #90a4ae;
-                color: #eeeeee;
-            }
-        """
-
-        self.report_button = QPushButton("Create Report")
-        self.report_button.setFixedWidth(150)
-        self.report_button.clicked.connect(self.create_pdf_report)
-        self.report_button.setStyleSheet(action_button_style)
-
-        self.quit_button = QPushButton("Quit")
-        self.quit_button.setFixedWidth(150)
-        self.quit_button.clicked.connect(self.close)
-        self.quit_button.setStyleSheet(
-            """
-            background-color: "darkred";
-            color: white;
-            border-radius: 0px;
-            padding: 12px 24px 12px 24px;
-            """
-        )
-
-        # --- Layout composition ---
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(top_widget)
-
- 
-        # Video subpanel layout
-        video_panel_layout = QVBoxLayout()
-        video_panel_layout.addWidget(self.image_label, stretch=1)
-        video_panel_layout.addWidget(self.frame_slider)
-        video_panel_layout.addWidget(self.frame_number_box)
-        video_panel_layout.addWidget(self.detection_count_box)
-        video_panel_layout.addLayout(controls_layout)
-        
-        # Add stretching content layout to video panel
-        content_layout.addLayout(video_panel_layout, stretch=1)
-
-        # Add content layout to main layout
-        main_layout.addLayout(content_layout)
-
-        # Create central widget
-        central_widget = QWidget()
-        central_widget.setLayout(main_layout)
-        self.setCentralWidget(central_widget)
-        self._create_menu()
-
-    def setup_video_ui(self):
-
         # Image display label
         self.image_label = QLabel("No video loaded")
         self.image_label.setAlignment(QtCoreQt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("background-color: black; color: white;")
         self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.image_label.setMinimumSize(32, 32)
 
         # Frame slider
         self.frame_slider = QSlider(QtCoreQt.Orientation.Horizontal)
+        self.frame_slider.setStyleSheet(
+            """
+            QSlider::handle:horizontal {
+                background: #5c5c5c;
+                border: 1px solid #5c5c5c;
+                width: 16px;
+                margin: -8px 0;
+                border-radius: 3px;
+            }
+            QSlider::groove:horizontal {
+                background: #d3d3d3;
+                height: 8px;
+                border-radius: 0px;
+            }
+            """
+        )
         self.frame_slider.setEnabled(False)
         self.frame_slider.valueChanged.connect(self.slider_frame_changed)
 
@@ -244,25 +162,138 @@ class MainWindow(QMainWindow):
         self.stop_button.setFont(button_font)
         self.stop_button.clicked.connect(self.stop_video)
 
-        self.ff_button = QToolButton()
-        self.ff_button.setText('>>')
-        self.ff_button.setFixedSize(button_size, button_size)
-        self.ff_button.setFont(button_font)
-        self.ff_button.clicked.connect(self.fast_forward)
+        self.plus1_button = QToolButton()
+        # Use a standard 'step forward' icon
+        from PyQt6.QtGui import QIcon
+        from PyQt6.QtWidgets import QStyle
+        style = QApplication.style()
+        step_forward_icon = style.standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward)
+        self.plus1_button.setIcon(step_forward_icon)
+        self.plus1_button.setIconSize(self.plus1_button.sizeHint())
+        self.plus1_button.setFixedSize(button_size, button_size)
+        self.plus1_button.setFont(button_font)
+        self.plus1_button.clicked.connect(self.step_forward)
 
-        self.rev_button = QToolButton()
-        self.rev_button.setText('<<')
-        self.rev_button.setFixedSize(button_size, button_size)
-        self.rev_button.setFont(button_font)
-        self.rev_button.clicked.connect(self.reverse)
+        self.minus1_button = QToolButton()
+        self.minus1_button.setText('<<')
+        self.minus1_button.setFixedSize(button_size, button_size)
+        self.minus1_button.setFont(button_font)
+        self.minus1_button.clicked.connect(self.step_backward)
 
         controls_layout = QHBoxLayout()
+        controls_layout.addWidget(self.frame_number_box)
         controls_layout.addStretch(1)
-        controls_layout.addWidget(self.rev_button)
+        controls_layout.addWidget(self.minus1_button)
         controls_layout.addWidget(self.play_button)
         controls_layout.addWidget(self.stop_button)
-        controls_layout.addWidget(self.ff_button)
+        controls_layout.addWidget(self.plus1_button)
         controls_layout.addStretch(1)
+        controls_layout.addWidget(self.detection_count_box)
+
+        # Detect button: full width, orange
+        self.detect_button = QPushButton("Detect Flashes")
+        self.detect_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.detect_button.setMinimumHeight(40)
+        self.detect_button.clicked.connect(self.run_detection)
+        self.detect_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: orange;
+                color: white;
+                border-radius: 0px;
+                padding: 12px 0px 12px 0px;
+                font-weight: bold;
+            }
+            QPushButton:disabled {
+                background-color: #ffd699;
+                color: #eeeeee;
+            }
+            """
+        )
+
+        self.quit_button = QPushButton("Quit")
+        self.quit_button.setFixedWidth(150)
+        self.quit_button.clicked.connect(self.close)
+        self.quit_button.setStyleSheet(
+            """
+            background-color: "darkred";
+            color: white;
+            border-radius: 0px;
+            padding: 12px 24px 12px 24px;
+            """
+        )
+
+        # Create an hbox for the detect and quit buttons
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.detect_button)
+        button_layout.addWidget(self.quit_button)
+
+        # Detection tab subpanel layout
+        detection_panel_layout = QVBoxLayout()
+        detection_panel_layout.addWidget(top_widget)
+        detection_panel_layout.addWidget(self.image_label, stretch=1)
+        detection_panel_layout.addWidget(self.frame_slider)
+        detection_panel_layout.addLayout(controls_layout)
+        detection_panel_layout.addLayout(button_layout)
+
+        self.detection_tab.setLayout(detection_panel_layout)
+
+    def setup_review_ui(self):
+
+        review_layout = QVBoxLayout()
+        review_label = QLabel("Detection Results will be shown here.")
+        review_label.setAlignment(QtCoreQt.AlignmentFlag.AlignCenter)
+        review_layout.addWidget(review_label)
+        
+        self.report_button = QPushButton("Create Report")
+        self.report_button.setFixedWidth(150)
+        self.report_button.clicked.connect(self.create_pdf_report)
+        self.report_button.setStyleSheet(
+           """
+            background-color: "darkred";
+            color: white;
+            border-radius: 0px;
+            padding: 12px 24px 12px 24px;
+            """
+        )
+        review_layout.addWidget(self.report_button)
+        self.review_tab.setLayout(review_layout)
+
+    def setup_configuration_ui(self):
+
+        config_layout = QVBoxLayout()
+
+        param_grid = QGridLayout()
+
+        param_setup = {
+            "MAD Threshold (typically between 3 and 7)": 5.0,
+            "Min Area (pix) (typically between 5 and 10)": 5,
+            "Max Area (pix) (typically less than 100)": 75,
+            "Min Duration (s)": 0.05,
+            "Max Duration (s)": 0.15
+        }
+
+        # Store references to labels and boxes for later retrieval
+        self.param_labels = []
+        self.param_boxes = []
+        
+        for i, name in enumerate(param_setup.keys()):
+            label = QLabel(name)
+            label.setAlignment(QtCoreQt.AlignmentFlag.AlignLeft | QtCoreQt.AlignmentFlag.AlignVCenter)
+            box = QLineEdit()
+            box.setFixedWidth(120)
+            box.setText(str(param_setup[name]))
+            self.param_labels.append(label)
+            self.param_boxes.append(box)
+            param_grid.addWidget(label, i, 0)
+            param_grid.addWidget(box, i, 1)
+
+        # Add the parameter grid to the Configuration tab (Tab 3)
+        config_tab_layout = QVBoxLayout()
+        config_tab_layout.addLayout(param_grid)
+        config_tab_layout.addStretch(1)
+        self.configuration_tab.setLayout(config_tab_layout)
+
 
     def play_video(self):
         if not self.cap:
@@ -284,17 +315,17 @@ class MainWindow(QMainWindow):
     def stop_video(self):
         self._playing = False
 
-    def fast_forward(self):
+    def step_forward(self):
         if not self.cap:
             return
         pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
-        self.show_frame(pos + 10)
+        self.show_frame(pos + 1)
 
-    def reverse(self):
+    def step_backward(self):
         if not self.cap:
             return
         pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
-        self.show_frame(max(0, pos - 10))
+        self.show_frame(max(0, pos - 1))
 
     def _create_menu(self):
         menubar = self.menuBar()
@@ -394,9 +425,17 @@ class MainWindow(QMainWindow):
         bytes_per_line = ch * w
         qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_image)
-        self.image_label.setPixmap(pixmap.scaled(
-            self.image_label.size(), QtCoreQt.AspectRatioMode.KeepAspectRatio, QtCoreQt.TransformationMode.SmoothTransformation
-        ))
+
+        # Scale image to fit label while maintaining aspect ratio
+        pixmap_scaled = pixmap.scaled(
+            self.image_label.size(),
+            QtCoreQt.AspectRatioMode.KeepAspectRatio,
+            QtCoreQt.TransformationMode.SmoothTransformation
+        )
+
+        # Show the image in the label
+        self.image_label.setPixmap(pixmap_scaled)
+
         # Update slider and frame number box
         self.frame_slider.blockSignals(True)
         self.frame_slider.setValue(frame_idx)

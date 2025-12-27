@@ -6,7 +6,10 @@ import time
 from build.lib.lifdetector import detection
 
 # Detect if CUDA is available for CuPy
-cuda_available = cp.cuda.is_available()
+try:
+    cuda_available = cp.cuda.is_available()
+except Exception:
+    cuda_available = False
 
 if cuda_available:
 
