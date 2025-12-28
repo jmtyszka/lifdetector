@@ -388,8 +388,6 @@ class MainWindow(QMainWindow):
             f"Detected {len(flash_list)} flashes"
         )
 
-    # Removed update_frame_number_box and run_on_main_thread; update GUI directly in main thread
-
     def open_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Open AVI File", "", "AVI Files (*.avi)"

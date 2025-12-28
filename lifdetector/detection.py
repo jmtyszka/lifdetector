@@ -1,7 +1,11 @@
-from turtle import pd
 import cupy as cp
 import cv2
 import time
+import pandas as pd
+
+from sklearn.mixture import GaussianMixture
+from skimage.morphology import disk
+from skimage.measure import regionprops
 
 from build.lib.lifdetector import detection
 
@@ -13,7 +17,7 @@ except Exception:
 
 if cuda_available:
 
-    print("CUDA is available")
+    print("CUDA is available. Using GPU compute")
     import cupy as npx
     import cupyx.scipy.ndimage as spndx
 
@@ -46,6 +50,8 @@ class AnomalyDetector:
             video_path: Path to the AVI file.
             mad_thresh: MAD threshold for flash detection.
         """
+
+        self.verbose = False
 
         self.video_path = video_path
         self.n_rows = None
@@ -106,120 +112,222 @@ class AnomalyDetector:
             # frame: the image frame as a NumPy array
             ret, frame_raw = self.cap.read()
             if ret:
-
-                # Convert to grayscale if color (BGR)
-                if len(frame_raw.shape) == 3 and frame_raw.shape[2] == 3:
-                    frame = cv2.cvtColor(frame_raw, cv2.COLOR_BGR2GRAY)
-                else:
-                    frame = frame_raw
-
                 # Append the frame (numpy array) to the list
-                frames_list.append(frame)
-
+                frames_list.append(self.safe_grayscale(frame_raw))
             else:
                 print(f"Short frame block - end of video reached at frame {f_start + frame_idx}")
                 break
         
-            # Convert frame list to 3D frame block (time, y, x)
-            self.frame_block = npx.array(frames_list, dtype=npx.float32)
-            self.n_rows, self.n_cols = self.frame_block.shape[1], self.frame_block.shape[2]
+            # Convert frame list to 3D signal block (time, y, x)
+            self.signal_3d = npx.array(frames_list, dtype=npx.float32)
+            self.n_rows, self.n_cols = self.signal_3d.shape[1], self.signal_3d.shape[2]
+
+            # Phase 1: Statistical anomaly detection
+            # - Calculate temporal mean and SD of noisy signal at each pixel
+            # - Create a pixel exclusion mask based on tSD
+            # - Create a smoothed mask smoothed detection threshold map
+            # - Identify suprathreshold pixels in 3D frame block using threshold map
             
-            # Calculate temporal median and MAD of noisy signal at each pixel
-            s_tmed = npx.median(self.frame_block, axis=0)
+            # Calculate temporal mean and SD of noisy signal at each pixel
+            self.s_tmean = npx.mean(self.signal_3d, axis=0)
+            self.s_tsd = npx.std(self.signal_3d, axis=0)
 
-            # t0 = time.perf_counter()
-            s_tmad = npx.median(npx.abs(self.frame_block - s_tmed), axis=0)
+            # Create pixel exclusion mask where tSD close to zero or very high
+            # Corresponding to clipped pixels or motion artifacts close to clipped regions
+            self.create_exclusion_mask()
 
-            # Create zero MAD mask
-            zero_mad_mask = s_tmad == 0
+            # Calculate mask-smoothed detection threshold map
+            self.create_threshold_map()
 
-            # Dilate zero MAD mask using a local maximum filter over 5x5 neighborhood
-            footprint = npx.ones((5, 5), dtype=npx.uint8)
-            mad_mask = spndx.maximum_filter(zero_mad_mask.astype(npx.uint8), footprint=footprint) > 0
+            # Identify suprathreshold voxels in 3D frame block
+            self.identify_suprathreshold_voxels()
 
-            # Create a 2D spatial threshold map from the temporal median and MAD
-            thresh_map = s_tmed + self.mad_thresh * s_tmad
+            # Phase 2: Shortlist anomalies using connected components analysis
+            # - Apply user-defined criteria to size and duration of candidate regions
+            self.shortlist_anomalies()
 
-            # Smooth threshold map while ignoring MAD-masked pixels
-            thresh_map = self.masked_gaussian_filter(thresh_map, mad_mask, sigma=5.0)
+    def create_exclusion_mask(self):
+        """
+        Create pixel exclusion mask based on temporal SD.
+        Exclude pixels with very low or very high temporal SD.
+        """
 
-            # Reapply MAD mask to threshold map
-            thresh_map = npx.where(mad_mask, npx.nan, thresh_map)
+        # Gaussian mixture model to SD histogram for pixel exclusion thresholding
 
-            # Identify suprathreshold pixels in the 3D frame block
-            thresh_3d = npx.expand_dims(thresh_map, axis=0)
-            suprathreshold = self.frame_block >= thresh_3d
+        # Subsample full SD distribution for GMM fitting if too large
+        max_pixels = 5000
+        if self.s_tsd.size > max_pixels:
+            step = int((self.s_tsd.size / max_pixels) ** 0.5)
+            s_tsd_sub = self.s_tsd[::step, ::step]
+            if self.verbose:
+                print(f"Subsampling tSD for GMM fitting: step={step}, subsampled pixels={s_tsd_sub.size}")
+            sd_values = s_tsd_sub.flatten().reshape(-1, 1)
+        else:
+            sd_values = self.s_tsd.flatten().reshape(-1, 1)
 
-            # Iteratively adjust threshold multiplier upwards until < 100 voxel detections found
-            max_detections = 100
-            thresh_scale = 1.0
-            total_detections = npx.sum(suprathreshold)
+        if self.verbose:
+            print("Number of pixels:", sd_values.shape[0])
 
-            while total_detections > max_detections:
-                thresh_scale += 0.1
-                suprathreshold = self.frame_block >= thresh_3d * thresh_scale
-                total_detections = npx.sum(suprathreshold)
+        model = GaussianMixture(n_components=2, covariance_type='full', random_state=0)
 
-            print(f"Final threshold scale factor: {thresh_scale:.2f}")
-            print(f"Total candidate detections: {total_detections}")
+        model.fit(sd_values.get() if cuda_available else sd_values)
+        weights = model.weights_.flatten()
+        means = model.means_.flatten()
+        sds = model.covariances_.flatten() ** 0.5
 
-            # Find connected components in 3D detection block
-            t0 = time.perf_counter()
-            labels, num_features = spndx.label(suprathreshold, structure=self._strel6)
-            print(f"Connected components labeling computed in {(time.perf_counter() - t0)*1e3:.2f} ms")
-            print(f"Number of detected components: {num_features}")
+        # Select larger gaussian component as sensor noise
+        noise_component = means.argmax()
+        clipped_component = 1 - noise_component
 
-            anomaly_list = []
+        w_clipped = weights[clipped_component]
+        m_clipped = means[clipped_component]
+        sd_clipped = sds[clipped_component]
 
-            for l in range(1, num_features + 1):
+        w_noise = weights[noise_component]
+        m_noise = means[noise_component]
+        sd_noise = sds[noise_component]
 
-                # Find bounding box of component l
-                component_indices = npx.where(labels == l)
-                bb_t_min, bb_t_max = int(npx.min(component_indices[0])), int(npx.max(component_indices[0])+1)
-                bb_y_min, bb_y_max = int(npx.min(component_indices[1])), int(npx.max(component_indices[1])+1)
-                bb_x_min, bb_x_max = int(npx.min(component_indices[2])), int(npx.max(component_indices[2])+1)
+        if self.verbose:
+            print(f"GMM Clipped Component: Weight={w_clipped:.2f}, Mean={m_clipped:.2f}, SD={sd_clipped:.2f}")
+            print(f"GMM Noise Component: Weight={w_noise:.2f}, Mean={m_noise:.2f}, SD={sd_noise:.2f}")
 
-                # Center of bounding box
-                com_y, com_x = (bb_y_min + bb_y_max) / 2, (bb_x_min + bb_x_max) / 2
+        # Use the naive Bayes discrimination boundary as the exclusion threshold where P(noise) = P(clipped)
+        #
+        # Reference:
+        # Duda, R. O., Hart, P. E., & Stork, D. G. (2001). Pattern Classification (2nd Edition),
+        # Section 2.5.2: "Normal Density: Discriminant Functions for the Normal Density". Wiley-Interscience.
+        
+        nbd = (
+            ((m_clipped**2) - (m_noise**2)) + 
+            2 * (sd_clipped**2 * npx.log(w_noise * sd_clipped) -
+                sd_noise**2 * npx.log(w_clipped * sd_noise))
+        ) / (2 * (m_clipped - m_noise))
 
-                # Calculate spatial area and temporal duration of component l
-                area_pix = (bb_y_max - bb_y_min) * (bb_x_max - bb_x_min)
-                duration_secs = (bb_t_max - bb_t_min) / self.fps
+        if self.verbose:
+            print(f"\nNaive Bayes Discrimination Boundary (tSD): {nbd:.2f}")
 
-                candidate = (
-                    area_pix >= self.min_area_pix and
-                    area_pix <= self.max_area_pix and
-                    duration_secs >= self.min_duration_secs and
-                    duration_secs <= self.max_duration_secs
-                )
-                
-                if candidate:
+        # Lower threshold avoids clipped voxels
+        tsd_thresh_low = nbd
 
-                    # Extract anomaly bounding box image data
-                    anomaly_image = self.frame_block[
-                        bb_t_min:bb_t_max,
-                        bb_y_min:bb_y_max,
-                        bb_x_min:bb_x_max
-                    ]
+        # Upper threshold to exclude unusually high tSD pixels but cap at 255
+        tsd_thresh_high = m_noise + 10 * sd_noise
+        if tsd_thresh_high > 255:
+            tsd_thresh_high = 255.0
 
-                    this_anomaly = {
-                        'label': l,
-                        't_min': bb_t_min,
-                        't_max': bb_t_max,
-                        'y_min': bb_y_min,
-                        'y_max': bb_y_max,
-                        'x_min': bb_x_min,
-                        'x_max': bb_x_max,
-                        'com_x': com_x,
-                        'com_y': com_y,
-                        'area_pix': area_pix,
-                        'duration_secs': duration_secs,
-                        'anomaly_image': anomaly_image
-                    }
+        if self.verbose:
+            print(f"\ntSD Exclusion thresholds: Low={tsd_thresh_low:.2f}, High={tsd_thresh_high:.2f}")
 
-                    anomaly_list.append(this_anomaly)
+        # Exclude clipped pixels with tSD below threshold
+        exclude_mask = (self.s_tsd < tsd_thresh_low) | (self.s_tsd > tsd_thresh_high)
 
-            self.detected_anomalies = anomaly_list
+        # Dilate mask using a k-pixel diameter circular structured element
+        # Set k in UI config tab
+        r_disk = 11
+        footprint = disk(r_disk).astype(npx.uint8)
+        if self.verbose:
+            print(f'Structured element radius: {r_disk}')
+
+        self.exclude_mask = spndx.maximum_filter(exclude_mask.astype(npx.uint8), footprint=footprint) > 0
+
+    def create_threshold_map(self):
+        """
+        Create smoothed detection threshold map using masked Gaussian filtering.
+        """
+
+        # Create a 2D spatial threshold map from the temporal mean and sd
+        alpha = 5.0  # Threshold scaling factor
+        self.thresh_map = self.s_tmean + alpha * self.s_tsd
+
+        # Add pixels with thrshold > 255 to exclusion mask
+        self.exclude_mask = self.exclude_mask | (self.thresh_map > 255)
+
+        # Apply masked Gaussian filtering to threshold map
+        # Using sigma=10.0 as an example; set from UI config tab
+        t0 = time.perf_counter()
+        self.thresh_map = self.masked_gaussian_filter(self.thresh_map, self.exclude_mask, sigma=10.0)
+        if self.verbose:
+            print(f"Masked Gaussian filtering computed in {(time.perf_counter() - t0)*1e3:.2f} ms")
+
+        # Reapply exclusion mask to threshold map
+        self.thresh_map = npx.where(self.exclude_mask, npx.nan, self.thresh_map)
+
+    def identify_suprathreshold_voxels(self):
+        """
+        Identify suprathreshold voxels in 3D frame block using threshold map.
+        """
+        # Threshold the signal to create candidate anomaly detections
+        thresh_map_3d = npx.expand_dims(self.thresh_map, axis=0)
+        self.suprathreshold_3d = self.signal_3d >= thresh_map_3d
+
+        # Display temporal sum of suprathreshold voxels
+        self.detection_tsum = npx.sum(self.suprathreshold_3d.astype(npx.uint8), axis=0)
+
+    def shortlist_anomalies(self):
+        """
+        Shortlist anomalies using connected components analysis and user-defined criteria.
+        """
+
+        # Binarize temporal sum image for morphological analysis
+        detection_bin = self.detection_tsum > 0
+
+        labels, num_labels = spndx.label(detection_bin)
+        if self.verbose:
+            print(f"Number of initial candidate regions: {num_labels}")
+        regions = regionprops(labels.get() if cuda_available else labels)
+
+        anomaly_list = []
+
+        for region in regions:
+
+            # Get XY bounding box of region
+            bb_xy = region.bbox
+
+            # Extract bounding box subregion from suprathreshold 3D mask
+            supra_bb_xy = self.suprathreshold_3d[:, bb_xy[0]:bb_xy[2], bb_xy[1]:bb_xy[3]]
+
+            # Get temporal bounding box
+            supra_indices = npx.where(supra_bb_xy)
+            t_min, t_max = int(npx.min(supra_indices[0])), int(npx.max(supra_indices[0])+1)
+
+            # Duration of temporal bounding box in seconds
+            duration = (t_max - t_min) / self.fps
+
+            # Apply phase 2 candidate criteria
+            candidate = duration > 0.05 and duration < 0.20 and region.area >= 5 and region.area <= 20
+
+            if candidate:
+                anomaly_list.append({
+                    'label': region.label,
+                    'x_min': bb_xy[1],
+                    'x_max': bb_xy[3],
+                    'y_min': bb_xy[0],
+                    'y_max': bb_xy[2],
+                    't_min': t_min,
+                    't_max': t_max,
+                    'duration_s': duration,
+                    'area_px': region.area,
+                    'com_x': region.centroid[1],
+                    'com_y': region.centroid[0],
+                })
+
+        # Convert to dataframe for easier viewing
+        anomaly_df = pd.DataFrame(anomaly_list)
+
+        if self.verbose:
+            print(anomaly_df)
+
+    @staticmethod
+    def safe_grayscale(frame):
+        """
+        Safely convert frame to grayscale.
+        """
+
+        # Convert to grayscale if color (BGR)
+        if len(frame.shape) == 3 and frame.shape[2] == 3:
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            gray_frame = frame
+        return gray_frame
 
     def masked_gaussian_filter(self, img, mask, sigma):
                               
@@ -234,7 +342,6 @@ class AnomalyDetector:
         filtered_image = spndx.gaussian_filter(image_filled, sigma=sigma)
         normalization = spndx.gaussian_filter((~mask).astype(npx.float32), sigma=sigma)
         normalization = npx.where(normalization == 0, npx.nan, normalization)
-
         return filtered_image / normalization
     
     def cleanup(self):
