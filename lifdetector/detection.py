@@ -98,12 +98,12 @@ class AnomalyDetector:
         print(f"  Entering detect_in_block with start_frame {start_frame}")
 
         # Adjust block length if it exceeds total frames
-        f_start = max(0, start_frame)
-        f_end = min(self.total_frames, f_start + block_size)
-        n_frames = f_end - f_start
+        self.f_start = max(0, start_frame)
+        self.f_end = min(self.total_frames, self.f_start + block_size)
+        n_frames = self.f_end - self.f_start
 
         # Fast forward to f_start
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, f_start)
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.f_start)
 
         # Initialize frame block
         frames_list = []
@@ -118,12 +118,12 @@ class AnomalyDetector:
                 # Append the frame (numpy array) to the list
                 frames_list.append(self.safe_grayscale(frame_raw))
             else:
-                print(f"Short frame block - end of video reached at frame {f_start + frame_idx}")
+                print(f"Short frame block - end of video reached at frame {self.f_start + frame_idx}")
                 break
         
         # Convert frame list to 3D signal block (time, y, x)
-        self.signal_3d = npx.array(frames_list, dtype=npx.float32)
-        self.n_rows, self.n_cols = self.signal_3d.shape[1], self.signal_3d.shape[2]
+        self.frame_block_3d = npx.array(frames_list, dtype=npx.float32)
+        self.n_rows, self.n_cols = self.frame_block_3d.shape[1], self.frame_block_3d.shape[2]
 
         # Phase 1: Statistical anomaly detection
         # - Calculate temporal mean and SD of noisy signal at each pixel
@@ -132,8 +132,8 @@ class AnomalyDetector:
         # - Identify suprathreshold pixels in 3D frame block using threshold map
         
         # Calculate temporal mean and SD of noisy signal at each pixel
-        self.s_tmean = npx.mean(self.signal_3d, axis=0)
-        self.s_tsd = npx.std(self.signal_3d, axis=0)
+        self.s_tmean = npx.mean(self.frame_block_3d, axis=0)
+        self.s_tsd = npx.std(self.frame_block_3d, axis=0)
 
         # Create pixel exclusion mask where tSD close to zero or very high
         # Corresponding to clipped pixels or motion artifacts close to clipped regions
@@ -268,7 +268,7 @@ class AnomalyDetector:
         """
         # Threshold the signal to create candidate anomaly detections
         thresh_map_3d = npx.expand_dims(self.thresh_map, axis=0)
-        self.suprathreshold_3d = self.signal_3d >= thresh_map_3d
+        self.suprathreshold_3d = self.frame_block_3d >= thresh_map_3d
 
         # Display temporal sum of suprathreshold voxels
         self.detection_tsum = npx.sum(self.suprathreshold_3d.astype(npx.uint8), axis=0)
@@ -318,27 +318,27 @@ class AnomalyDetector:
                 roi_f_max = min(f_max + self.roi_tpad, self.total_frames)
 
                 # ROI time vector relative to anomaly onset in seconds
-                roi_t_vec = npx.arange(0, roi_f_max - roi_f_min) / self.fps
+                roi_t_vec_s = npx.arange(0, roi_f_max - roi_f_min) / self.fps
 
-                # Extract 3D signal subregion around candidate flash
-                roi_signal_3d = self.signal_3d[roi_f_min:roi_f_max, roi_y_min:roi_y_max, roi_x_min:roi_x_max]
+                # Extract anomaly signal ROI from frame block
+                roi_signal_3d = self.frame_block_3d[roi_f_min:roi_f_max, roi_y_min:roi_y_max, roi_x_min:roi_x_max]
+
+                # Convert CuPy arrays back to numpy if using CUDA
+                if cuda_available:
+                    roi_t_vec_s = roi_t_vec_s.get()
+                    roi_signal_3d = roi_signal_3d.get()
 
                 # Add candidate flash anomaly to the running list
                 self.anomaly_list.append({
                     'label': region.label,
-                    'roi_x_min': roi_x_min,
-                    'roi_x_max': roi_x_max,
-                    'roi_y_min': roi_y_min,
-                    'roi_y_max': roi_y_max,
-                    'roi_f_min': roi_f_min,
-                    'roi_f_max': roi_f_max,
-                    't_min_s': start_s,
-                    't_max_s': end_s,
-                    'duration_s': duration_s,
-                    'area_px': region.area,
-                    'com_x': region.centroid[1],
-                    'com_y': region.centroid[0],
-                    'roi_signal_3d': roi_signal_3d
+                    'f_anomaly_start': self.f_start + f_min,  # Anomaly start frame in original video
+                    'roi_f_anomaly_start': roi_f_min,  # Anomaly start frame within ROI
+                    'roi_t_vec_s': roi_t_vec_s,  # Time vector for ROI in seconds relative to ROI start
+                    'duration_s': duration_s,  # Anomaly duration in seconds
+                    'area_px': region.area,  # Anomaly area in pixels
+                    'com_x': region.centroid[1],  # Anomaly centroid X in original frame coordinates
+                    'com_y': region.centroid[0],  # Anomaly centroid Y in original frame coordinates
+                    'roi_signal_3d': roi_signal_3d  # Extracted ROI signal data S_roi(t, x, y)
                 })
 
     @staticmethod
