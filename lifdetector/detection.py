@@ -7,9 +7,7 @@ from sklearn.mixture import GaussianMixture
 from skimage.morphology import disk
 from skimage.measure import regionprops
 
-from build.lib.lifdetector import detection
-
-# Detect if CUDA is available for CuPy
+# Check if CUDA is available for CuPy
 try:
     cuda_available = cp.cuda.is_available()
 except Exception:
@@ -56,8 +54,11 @@ class AnomalyDetector:
         self.video_path = video_path
         self.n_rows = None
         self.n_cols = None
-        self.block_size = 32  # Number of frames per block
         self.frame_block = None  # Placeholder for frame block data
+
+        # Size of spatial ROI to extract around detected anomalies
+        self.roi_xyhalf = 10  # ROI half-width in pixels
+        self.roi_tpad = 2  # Temporal padding in frames around anomaly suprathreshold region
 
         # 3D structuring element with 6-connectivity
         self._strel6 = spndx.generate_binary_structure(3, 1)
@@ -69,8 +70,8 @@ class AnomalyDetector:
         self.min_duration_secs = min_duration_secs
         self.max_duration_secs = max_duration_secs
 
-        # Initialize list to hold detected anomalies
-        self.detected_anomalies = []
+        # Initialize running list of detected anomalies
+        self.anomaly_list = []
 
         # Open video capture
         self.cap = cv2.VideoCapture(video_path)
@@ -84,7 +85,7 @@ class AnomalyDetector:
         self.fps = float(self.cap.get(cv2.CAP_PROP_FPS))
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    def detect_in_block(self, start_frame:int=0):
+    def detect_in_block(self, start_frame:int=0, block_size:int=32):
         """
         Detect anomalies (flashes) in the frame block.
         Record anomalies as Anomaly objects containing timing and bounding box metadata
@@ -94,9 +95,11 @@ class AnomalyDetector:
             frame_start: Starting frame index of block in the original video.
         """
 
+        print(f"  Entering detect_in_block with start_frame {start_frame}")
+
         # Adjust block length if it exceeds total frames
         f_start = max(0, start_frame)
-        f_end = min(self.total_frames, f_start + self.block_size)
+        f_end = min(self.total_frames, f_start + block_size)
         n_frames = f_end - f_start
 
         # Fast forward to f_start
@@ -109,7 +112,7 @@ class AnomalyDetector:
         for frame_idx in range(n_frames):
 
             # ret: boolean, True if frame was read successfully
-            # frame: the image frame as a NumPy array
+            # frame_raw: the image frame as a NumPy array
             ret, frame_raw = self.cap.read()
             if ret:
                 # Append the frame (numpy array) to the list
@@ -118,33 +121,41 @@ class AnomalyDetector:
                 print(f"Short frame block - end of video reached at frame {f_start + frame_idx}")
                 break
         
-            # Convert frame list to 3D signal block (time, y, x)
-            self.signal_3d = npx.array(frames_list, dtype=npx.float32)
-            self.n_rows, self.n_cols = self.signal_3d.shape[1], self.signal_3d.shape[2]
+        # Convert frame list to 3D signal block (time, y, x)
+        self.signal_3d = npx.array(frames_list, dtype=npx.float32)
+        self.n_rows, self.n_cols = self.signal_3d.shape[1], self.signal_3d.shape[2]
 
-            # Phase 1: Statistical anomaly detection
-            # - Calculate temporal mean and SD of noisy signal at each pixel
-            # - Create a pixel exclusion mask based on tSD
-            # - Create a smoothed mask smoothed detection threshold map
-            # - Identify suprathreshold pixels in 3D frame block using threshold map
-            
-            # Calculate temporal mean and SD of noisy signal at each pixel
-            self.s_tmean = npx.mean(self.signal_3d, axis=0)
-            self.s_tsd = npx.std(self.signal_3d, axis=0)
+        # Phase 1: Statistical anomaly detection
+        # - Calculate temporal mean and SD of noisy signal at each pixel
+        # - Create a pixel exclusion mask based on tSD
+        # - Create a smoothed mask smoothed detection threshold map
+        # - Identify suprathreshold pixels in 3D frame block using threshold map
+        
+        # Calculate temporal mean and SD of noisy signal at each pixel
+        self.s_tmean = npx.mean(self.signal_3d, axis=0)
+        self.s_tsd = npx.std(self.signal_3d, axis=0)
 
-            # Create pixel exclusion mask where tSD close to zero or very high
-            # Corresponding to clipped pixels or motion artifacts close to clipped regions
-            self.create_exclusion_mask()
+        # Create pixel exclusion mask where tSD close to zero or very high
+        # Corresponding to clipped pixels or motion artifacts close to clipped regions
+        t0 = time.perf_counter()
+        self.create_exclusion_mask()
+        print(f"Exclusion mask computed in {(time.perf_counter() - t0)*1e3:.2f} ms")
 
-            # Calculate mask-smoothed detection threshold map
-            self.create_threshold_map()
+        # Calculate mask-smoothed detection threshold map
+        t0 = time.perf_counter()
+        self.create_threshold_map()
+        print(f"Threshold map computed in {(time.perf_counter() - t0)*1e3:.2f} ms")
 
-            # Identify suprathreshold voxels in 3D frame block
-            self.identify_suprathreshold_voxels()
+        # Identify suprathreshold voxels in 3D frame block
+        t0 = time.perf_counter()
+        self.identify_suprathreshold_voxels()
+        print(f"Suprathreshold voxel identification computed in {(time.perf_counter() - t0)*1e3:.2f} ms")
 
-            # Phase 2: Shortlist anomalies using connected components analysis
-            # - Apply user-defined criteria to size and duration of candidate regions
-            self.shortlist_anomalies()
+        # Phase 2: Shortlist anomalies using connected components analysis
+        # - Apply user-defined criteria to size and duration of candidate regions
+        t0 = time.perf_counter()
+        self.shortlist_anomalies()
+        print(f"Anomaly shortlisting computed in {(time.perf_counter() - t0)*1e3:.2f} ms")
 
     def create_exclusion_mask(self):
         """
@@ -191,16 +202,16 @@ class AnomalyDetector:
             print(f"GMM Clipped Component: Weight={w_clipped:.2f}, Mean={m_clipped:.2f}, SD={sd_clipped:.2f}")
             print(f"GMM Noise Component: Weight={w_noise:.2f}, Mean={m_noise:.2f}, SD={sd_noise:.2f}")
 
-        # Use the naive Bayes discrimination boundary as the exclusion threshold where P(noise) = P(clipped)
+        # Use the Naive Bayes Discrimination boundary as the exclusion threshold where P(noise) = P(clipped)
         #
-        # Reference:
-        # Duda, R. O., Hart, P. E., & Stork, D. G. (2001). Pattern Classification (2nd Edition),
+        # nbd_boundary = (m0^2 + m1^2) + 2( sd0^2 * ln(w1 * sd0) - sd1^2 * ln(w0 * sd1) ) / 2(m0 - m1)
+        #
+        # Reference: Duda, R. O., Hart, P. E., & Stork, D. G. (2001). Pattern Classification (2nd Edition),
         # Section 2.5.2: "Normal Density: Discriminant Functions for the Normal Density". Wiley-Interscience.
         
         nbd = (
-            ((m_clipped**2) - (m_noise**2)) + 
-            2 * (sd_clipped**2 * npx.log(w_noise * sd_clipped) -
-                sd_noise**2 * npx.log(w_clipped * sd_noise))
+            ( (m_clipped**2) - (m_noise**2) ) + 
+            2 * ( sd_clipped**2 * npx.log(w_noise * sd_clipped) - sd_noise**2 * npx.log(w_clipped * sd_noise) )
         ) / (2 * (m_clipped - m_noise))
 
         if self.verbose:
@@ -275,46 +286,60 @@ class AnomalyDetector:
             print(f"Number of initial candidate regions: {num_labels}")
         regions = regionprops(labels.get() if cuda_available else labels)
 
-        anomaly_list = []
-
         for region in regions:
 
             # Get XY bounding box of region
             bb_xy = region.bbox
+            x_min, y_min, x_max, y_max = bb_xy[1], bb_xy[0], bb_xy[3], bb_xy[2]
 
             # Extract bounding box subregion from suprathreshold 3D mask
-            supra_bb_xy = self.suprathreshold_3d[:, bb_xy[0]:bb_xy[2], bb_xy[1]:bb_xy[3]]
+            supra_bb_xy = self.suprathreshold_3d[:, y_min:y_max, x_min:x_max]
 
-            # Get temporal bounding box
+            # Get frame bounding box
             supra_indices = npx.where(supra_bb_xy)
-            t_min, t_max = int(npx.min(supra_indices[0])), int(npx.max(supra_indices[0])+1)
+            f_min, f_max = int(npx.min(supra_indices[0])), int(npx.max(supra_indices[0])+1)
 
-            # Duration of temporal bounding box in seconds
-            duration = (t_max - t_min) / self.fps
+            # Anomaly start and duration in seconds
+            start_s = f_min / self.fps
+            end_s = f_max / self.fps
+            duration_s = (end_s - start_s)
 
             # Apply phase 2 candidate criteria
-            candidate = duration > 0.05 and duration < 0.20 and region.area >= 5 and region.area <= 20
+            candidate = duration_s > 0.05 and duration_s < 0.20 and region.area >= 5 and region.area <= 20
 
             if candidate:
-                anomaly_list.append({
+
+                # Create expanded ROI around anomaly with temporal padding
+                roi_x_min = max(x_min - self.roi_xyhalf, 0)
+                roi_x_max = min(x_max + self.roi_xyhalf, self.n_cols)
+                roi_y_min = max(y_min - self.roi_xyhalf, 0)
+                roi_y_max = min(y_max + self.roi_xyhalf, self.n_rows)
+                roi_f_min = max(f_min - self.roi_tpad, 0)
+                roi_f_max = min(f_max + self.roi_tpad, self.total_frames)
+
+                # ROI time vector relative to anomaly onset in seconds
+                roi_t_vec = npx.arange(0, roi_f_max - roi_f_min) / self.fps
+
+                # Extract 3D signal subregion around candidate flash
+                roi_signal_3d = self.signal_3d[roi_f_min:roi_f_max, roi_y_min:roi_y_max, roi_x_min:roi_x_max]
+
+                # Add candidate flash anomaly to the running list
+                self.anomaly_list.append({
                     'label': region.label,
-                    'x_min': bb_xy[1],
-                    'x_max': bb_xy[3],
-                    'y_min': bb_xy[0],
-                    'y_max': bb_xy[2],
-                    't_min': t_min,
-                    't_max': t_max,
-                    'duration_s': duration,
+                    'roi_x_min': roi_x_min,
+                    'roi_x_max': roi_x_max,
+                    'roi_y_min': roi_y_min,
+                    'roi_y_max': roi_y_max,
+                    'roi_f_min': roi_f_min,
+                    'roi_f_max': roi_f_max,
+                    't_min_s': start_s,
+                    't_max_s': end_s,
+                    'duration_s': duration_s,
                     'area_px': region.area,
                     'com_x': region.centroid[1],
                     'com_y': region.centroid[0],
+                    'roi_signal_3d': roi_signal_3d
                 })
-
-        # Convert to dataframe for easier viewing
-        anomaly_df = pd.DataFrame(anomaly_list)
-
-        if self.verbose:
-            print(anomaly_df)
 
     @staticmethod
     def safe_grayscale(frame):
