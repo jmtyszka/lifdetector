@@ -219,14 +219,14 @@ class MainWindow(QMainWindow):
             """
             QPushButton {
                 background-color: orange;
-                color: white;
+                color: black;
                 border-radius: 0px;
                 padding: 12px 0px 12px 0px;
                 font-weight: bold;
             }
             QPushButton:disabled {
                 background-color: #ffd699;
-                color: #eeeeee;
+                color: #666666;
             }
             """
         )

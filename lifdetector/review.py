@@ -60,20 +60,20 @@ class ReviewCanvas(FigureCanvas):
         com_x = anomaly['com_x']  # Anomaly centroid X in original frame coordinates
         com_y = anomaly['com_y']  # Anomaly centroid Y in original frame coordinates
         roi_signal_3d = anomaly['roi_signal_3d']  # Extracted ROI signal data S_roi(t, x, y)
+        roi_suprathresh_3d = anomaly['roi_suprathresh_3d']  # Suprathreshold mask for ROI
+        anomaly_tprofile = anomaly['anomaly_tprofile']  # Temporal profile of anomaly (signal MIP onto time axis)
 
         # Create horizontal montage of XY slices through anomaly ROI
-        montage_frames = []
-        for frame_idx in range(0, roi_signal_3d.shape[0]):
-            slice_xy = roi_signal_3d[frame_idx, :, :]
-            montage_frames.append(slice_xy)
+        signal_montage = []
+        supra_montage = []
+        n_roi_frames = roi_signal_3d.shape[0]
+        for frame_idx in range(0,n_roi_frames):
+            signal_montage.append(roi_signal_3d[frame_idx, :, :])
+            supra_montage.append(roi_suprathresh_3d[frame_idx, :, :])
 
-        # Extract flash MIP profile
-        flash_profile = npx.max(npx.max(roi_signal_3d, axis=2), axis=1)
-
-        # Prepare data for plotting
-        plt_t = roi_t_vec_s
-        plt_flash_profile = flash_profile
-        plt_montage = npx.array(montage_frames)
+        # Concatenate montage frames into single array for plotting
+        plt_signal_montage = npx.concatenate(signal_montage, axis=1)
+        plt_supra_montage = npx.concatenate(supra_montage, axis=1)
 
         # Plot anomaly results in space and time
         # Plot individual frames in as separate axes in row one
@@ -82,42 +82,35 @@ class ReviewCanvas(FigureCanvas):
         # Clear previous figure
         self.figure.clf()
 
-        # First row: Montage of anomaly frames
-        ax1 = self.figure.add_subplot(211)
+        # First row: Montage of anomaly signal frames
+        ax1 = self.figure.add_subplot(311)
+        ax1.imshow(plt_signal_montage, cmap='magma')
+        ax1.set_title(f'Anomaly {label} Signal (Frame start: {f_anomaly_start} px, Duration: {duration_s:.2f} s)')
+        ax1.axis('off')
 
-        # Create list of subfigures for each row
-        gridspec = ax1.get_subplotspec().get_gridspec()
-        subfigs = [self.figure.add_subfigure(gs) for gs in gridspec]
+        # Second row: Montage of anomaly suprathreshold mask frames
+        ax2 = self.figure.add_subplot(312)
+        ax2.imshow(plt_supra_montage, cmap='gray')
+        ax2.set_title(f'Anomaly {label} Suprathreshold Mask Montage (Area: {area_px} px, Duration: {duration_s:.2f} s)')
+        ax2.axis('off')
 
-        # Add subplots to first row
-        subfigs[0].suptitle(f'Flash Onset at Frame {f_anomaly_start} (X: {com_x:0.1f}, Y: {com_y:0.1f})')
-
-        # Create n_roi_frame subplots in top row subfigure
-        n_montage_frames = len(montage_frames)
-
-        # Get grand scaling max for montage frames
-        grand_max = npx.max(plt_montage)
-
-        axs_toprow = subfigs[0].subplots(nrows=1, ncols=n_montage_frames)
-        for col, ax in enumerate(axs_toprow):
-            ax.imshow(plt_montage[col], cmap='magma', vmax=grand_max)
-            ax.axis('off')
-            # Set title to time in seconds
-            ax.set_title(f'{plt_t[col]:.2f} s')
-
-        ax_bottomrow = subfigs[1].subplots(nrows=1, ncols=1)
-        ax_bottomrow.plot(plt_t, plt_flash_profile)
+        # Third row: Temporal MIP profile of anomaly
+        ax3 = self.figure.add_subplot(313)
+        ax3.plot(roi_t_vec_s, anomaly_tprofile, color='blue')
+        ax3.set_xlabel('Time (s)')
+        ax3.set_ylabel('Temporal MIP')
+        ax3.set_title(f'Temporal MIP for Anomaly {label} (Area: {area_px} px, Duration: {duration_s:.2f} s)')
 
         # Add transparent green box to indicate detected flash duration
         # ax_bottomrow.axvspan(float(bb_t_min)/fps, float(bb_t_max)/fps, color='green', alpha=0.2)
 
         # Add box markers for frames shown in montage
-        for frame_idx in range(0, roi_signal_3d.shape[0]):
-            ax_bottomrow.axvline(plt_t[frame_idx], color='red', linestyle='--', alpha=0.5)
+        for frame_idx in range(0, n_roi_frames):
+            ax3.axvline(roi_t_vec_s[frame_idx], color='red', linestyle='--', alpha=0.5)
 
-        ax_bottomrow.set_xlabel('Time (s)')
-        ax_bottomrow.set_ylabel('Temporal MIP')
-        ax_bottomrow.set_title(f'Temporal MIP for Anomaly {label} (Area: {area_px} px, Duration: {duration_s:.2f} s)')
+        ax3.set_xlabel('Time (s)')
+        ax3.set_ylabel('Temporal MIP')
+        ax3.set_title(f'Temporal MIP for Anomaly {label} (Area: {area_px} px, Duration: {duration_s:.2f} s)')
 
         self.draw()
 

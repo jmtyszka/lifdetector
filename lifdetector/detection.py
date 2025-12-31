@@ -304,29 +304,55 @@ class AnomalyDetector:
             end_s = f_max / self.fps
             duration_s = (end_s - start_s)
 
-            # Apply phase 2 candidate criteria
-            candidate = duration_s > 0.05 and duration_s < 0.20 and region.area >= 5 and region.area <= 20
+            # Flag candidate anomalies based on size and duration criteria
+            good_size = (region.area >= self.min_area_pix) and (region.area <= self.max_area_pix)
+            good_duration = (duration_s >= self.min_duration_secs) and (duration_s <= self.max_duration_secs)
 
+            # ------------------------------------
+            # ROI time vector and data extraction
+            # ------------------------------------
+
+            # Create expanded ROI around anomaly with temporal padding
+            roi_x_min = max(x_min - self.roi_xyhalf, 0)
+            roi_x_max = min(x_max + self.roi_xyhalf, self.n_cols)
+            roi_y_min = max(y_min - self.roi_xyhalf, 0)
+            roi_y_max = min(y_max + self.roi_xyhalf, self.n_rows)
+            roi_f_min = max(f_min - self.roi_tpad, 0)
+            roi_f_max = min(f_max + self.roi_tpad, self.total_frames)
+
+            # ROI time vector relative to anomaly onset in seconds
+            roi_t_vec_s = npx.arange(0, roi_f_max - roi_f_min) / self.fps
+        
+            # Extract anomaly signal ROI from frame block
+            roi_signal_3d = self.frame_block_3d[roi_f_min:roi_f_max, roi_y_min:roi_y_max, roi_x_min:roi_x_max]
+
+            # Extract suprathreshold mask for ROI
+            roi_suprathresh_3d = self.suprathreshold_3d[roi_f_min:roi_f_max, roi_y_min:roi_y_max, roi_x_min:roi_x_max]
+
+            # Extract flash profile (ROI signal MIP onto time axis)
+            anomaly_tprofile = npx.max(npx.max(roi_signal_3d, axis=2), axis=1)
+
+            # False positive control near high-clipped intensity regions
+            # Anomaly profiles have little range and are close to max intensity
+            anomaly_tprofile_thresh = 100.0  # TODO: Set from UI config tab
+
+            # Flag for good temporal profile (unclipped)
+            good_tprofile = (npx.max(anomaly_tprofile) - npx.min(anomaly_tprofile)) > anomaly_tprofile_thresh
+
+            # ------------------------------------
+            # Phase 2: Candidate filtering
+            # ------------------------------------
+
+            candidate = good_size and good_duration and good_tprofile
+            
             if candidate:
-
-                # Create expanded ROI around anomaly with temporal padding
-                roi_x_min = max(x_min - self.roi_xyhalf, 0)
-                roi_x_max = min(x_max + self.roi_xyhalf, self.n_cols)
-                roi_y_min = max(y_min - self.roi_xyhalf, 0)
-                roi_y_max = min(y_max + self.roi_xyhalf, self.n_rows)
-                roi_f_min = max(f_min - self.roi_tpad, 0)
-                roi_f_max = min(f_max + self.roi_tpad, self.total_frames)
-
-                # ROI time vector relative to anomaly onset in seconds
-                roi_t_vec_s = npx.arange(0, roi_f_max - roi_f_min) / self.fps
-
-                # Extract anomaly signal ROI from frame block
-                roi_signal_3d = self.frame_block_3d[roi_f_min:roi_f_max, roi_y_min:roi_y_max, roi_x_min:roi_x_max]
 
                 # Convert CuPy arrays back to numpy if using CUDA
                 if cuda_available:
                     roi_t_vec_s = roi_t_vec_s.get()
                     roi_signal_3d = roi_signal_3d.get()
+                    roi_suprathresh_3d = roi_suprathresh_3d.get()
+                    anomaly_tprofile = anomaly_tprofile.get()
 
                 # Add candidate flash anomaly to the running list
                 self.anomaly_list.append({
@@ -338,7 +364,9 @@ class AnomalyDetector:
                     'area_px': region.area,  # Anomaly area in pixels
                     'com_x': region.centroid[1],  # Anomaly centroid X in original frame coordinates
                     'com_y': region.centroid[0],  # Anomaly centroid Y in original frame coordinates
-                    'roi_signal_3d': roi_signal_3d  # Extracted ROI signal data S_roi(t, x, y)
+                    'roi_signal_3d': roi_signal_3d,  # Extracted ROI signal data S_roi(t, x, y)
+                    'roi_suprathresh_3d': roi_suprathresh_3d,  # Suprathreshold mask for ROI
+                    'anomaly_tprofile': anomaly_tprofile  # Temporal signal MIP profile of anomaly
                 })
 
     @staticmethod
