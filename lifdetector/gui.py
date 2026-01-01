@@ -405,7 +405,23 @@ class MainWindow(QMainWindow):
         file_menu.addAction(exit_action)
 
     def create_pdf_report(self):
-        QMessageBox.information(self, "PDF Report", "PDF report generation not implemented yet.")
+        
+        if not hasattr(self, 'anomaly_list') or not self.anomaly_list:
+            QMessageBox.warning(self, "No Anomalies", "No anomalies to report.")
+            return
+        
+        pdf_filepath, _ = QFileDialog.getSaveFileName(
+            self, "Save PDF Report", "", "PDF Files (*.pdf)"
+        )
+        if not pdf_filepath:
+            return
+        
+        pdf_anomaly_report(self.anomaly_list, pdf_filepath)
+        
+        QMessageBox.information(
+            self, "Report Created",
+            f"PDF report saved to {pdf_filepath}"
+        )
 
     def run_detection(self):
 

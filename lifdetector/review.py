@@ -1,10 +1,14 @@
 import matplotlib.pyplot as plt
 import numpy as npx
+from fpdf import FPDF
+from PIL import Image
 
 # Matplotlib imports
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
+
 
 
 class ReviewCanvas(FigureCanvas):
@@ -114,6 +118,60 @@ class ReviewCanvas(FigureCanvas):
 
         self.draw()
 
+def save_anomalies(anomaly_list, csv_filepath):
+    """
+    Save anomaly data to CSV file
 
+    :param anomaly_list: List of anomaly dictionaries
+    :param csv_filepath: Path to save CSV file
+    """
+    import pandas as pd
 
-        
+    # Convert anomaly dictionary to DataFrame
+    anomaly_df = pd.DataFrame(anomaly_list)
+
+    # Save DataFrame to CSV
+    anomaly_df.to_csv(csv_filepath, index=False)
+
+def create_report(anomaly_list, pdf_filepath):
+    """
+    Create a multipage PDF report summarizing detected anomalies
+    Include video properties, anomaly figures and metadata
+
+    :param anomaly_list: List of anomaly dictionaries
+    :param pdf_filepath: Path to save the report file
+    """
+
+    # Create a PDF report using fpdf2
+    pdf = FPDF()
+
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(0, 10, "Anomaly Detection Report", ln=True, align='C')
+    pdf.ln(10)
+
+    for anomaly in anomaly_list:
+        # Create a ReviewCanvas to plot the anomaly
+        review_canvas = ReviewCanvas()
+        review_canvas.plot_anomaly(anomaly)
+
+        # Save the figure to a temporary image file
+        temp_image_path = "temp_anomaly_image.png"
+        review_canvas.figure.savefig(temp_image_path)
+
+        # Add a new page for each anomaly
+        pdf.add_page()
+        pdf.cell(0, 10, f"Anomaly {anomaly['label']}", ln=True, align='L')
+        pdf.image(temp_image_path, w=pdf.epw)  # Use effective page width
+
+        # Add anomaly metadata
+        pdf.ln(5)
+        pdf.cell(0, 10, f"Start Frame: {anomaly['f_anomaly_start']}", ln=True)
+        pdf.cell(0, 10, f"Duration (s): {anomaly['duration_s']:.2f}", ln=True)
+        pdf.cell(0, 10, f"Area (px): {anomaly['area_px']}", ln=True)
+        pdf.cell(0, 10, f"Centroid (X, Y): ({anomaly['com_x']}, {anomaly['com_y']})", ln=True)
+        pdf.ln(10)
+
+    # Save the PDF report
+    pdf.output(pdf_filepath)
