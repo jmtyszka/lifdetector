@@ -13,7 +13,18 @@ dependencies = [
     "reportlab",
     "numpy",
     "scipy",
-    "cupy"
+    "scikit-image",
+    "scikit-learn",
+    "pandas",
+    "matplotlib"
+]
+
+[project.optional-dependencies]
+# Optional cuda extra requires Windows + CUDA GPU
+# Only install [cuda] extra on Windows systems with CUDA-capable GPUs
+cuda = [
+    # CuPy only supported on Windows
+    "cupy; platform_system == 'Windows'",
 ]
  
 [project.scripts]

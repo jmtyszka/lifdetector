@@ -1,4 +1,3 @@
-import cupy as cp
 import cv2
 import time
 import pandas as pd
@@ -7,23 +6,25 @@ from sklearn.mixture import GaussianMixture
 from skimage.morphology import disk
 from skimage.measure import regionprops
 
-# Check if CUDA is available for CuPy
+# Check for CuPy and CUDA availability
 try:
-    cuda_available = cp.cuda.is_available()
+    # Test import
+    import cupy
+    cuda_available = cupy.cuda.is_available()
 except Exception:
     cuda_available = False
 
 if cuda_available:
 
-    print("CUDA is available. Using GPU compute")
+    print("CuPy/CUDA is available. Using GPU compute")
     import cupy as npx
     import cupyx.scipy.ndimage as spndx
 
     print(npx.show_config())
-
+    
 else:
     
-    print("CUDA is not available. Using CPU compute")
+    print("CuPy/CUDA is not available. Using CPU compute")
     import numpy as npx
     import scipy.ndimage as spndx
 
